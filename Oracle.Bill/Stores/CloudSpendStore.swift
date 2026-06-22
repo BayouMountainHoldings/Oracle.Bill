@@ -8,7 +8,15 @@ final class CloudSpendStore {
     private let notificationService: SpendNotificationing
 
     private(set) var accounts: [CloudAccount] = []
-    var refreshIntervalMinutes: Double = 60
+    var refreshIntervalMinutes: Double = {
+        let val = UserDefaults.standard.double(forKey: "refreshIntervalMinutes")
+        return val == 0 ? 5 : val
+    }() {
+        didSet {
+            UserDefaults.standard.set(refreshIntervalMinutes, forKey: "refreshIntervalMinutes")
+            startAutoRefresh()
+        }
+    }
     var lastError: String?
 
     var historicalSpend: [UUID: [HistoricalSpendPoint]] = [:]
@@ -21,6 +29,8 @@ final class CloudSpendStore {
         }
     }
 
+    private var refreshTask: Task<Void, Never>?
+
     init(
         usageService: OracleUsageFetching = OracleUsageService(),
         notificationService: SpendNotificationing = UserNotificationService()
@@ -28,6 +38,7 @@ final class CloudSpendStore {
         self.usageService = usageService
         self.notificationService = notificationService
         loadAccounts()
+        startAutoRefresh()
     }
 
     var totalSpend: Decimal {
@@ -237,6 +248,27 @@ final class CloudSpendStore {
         }
 
         isFetchingHistory[accountID] = false
+    }
+
+    func startAutoRefresh() {
+        refreshTask?.cancel()
+        refreshTask = Task {
+            while !Task.isCancelled {
+                let minutes = self.refreshIntervalMinutes
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(minutes * 60 * 1_000_000_000))
+                } catch {
+                    break
+                }
+                if Task.isCancelled { break }
+                await self.refreshAll()
+            }
+        }
+    }
+
+    func stopAutoRefresh() {
+        refreshTask?.cancel()
+        refreshTask = nil
     }
 
     private func update(accountID: CloudAccount.ID, _ body: (inout CloudAccount) -> Void) {

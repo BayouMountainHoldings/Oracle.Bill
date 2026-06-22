@@ -9,21 +9,57 @@ struct AccountManagerView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $selectedAccountID) {
-                ForEach(store.accounts) { account in
-                    AccountManagerRow(store: store, account: account)
-                        .tag(account.id)
-                        .contextMenu {
-                            Button("Refresh") {
-                                Task {
-                                    await store.refresh(accountID: account.id)
+            VStack(spacing: 0) {
+                List(selection: $selectedAccountID) {
+                    ForEach(store.accounts) { account in
+                        AccountManagerRow(store: store, account: account)
+                            .tag(account.id)
+                            .contextMenu {
+                                Button("Refresh") {
+                                    Task {
+                                        await store.refresh(accountID: account.id)
+                                    }
+                                }
+                                Button("Remove", role: .destructive) {
+                                    accountToDelete = account
                                 }
                             }
-                            Button("Remove", role: .destructive) {
-                                accountToDelete = account
-                            }
-                        }
+                    }
                 }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("General Settings")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Slider(value: $store.refreshIntervalMinutes, in: 5...360, step: 5) {
+                            Text("Auto Refresh")
+                                .font(.callout.weight(.medium))
+                        } minimumValueLabel: {
+                            Text("5m").font(.caption2)
+                        } maximumValueLabel: {
+                            Text("6h").font(.caption2)
+                        }
+
+                        Text("Interval: \(Int(store.refreshIntervalMinutes)) minutes")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Picker("Currency", selection: $store.selectedCurrency) {
+                        Text("Euro (€)").tag("EUR")
+                        Text("US Dollar ($)").tag("USD")
+                        Text("British Pound (£)").tag("GBP")
+                        Text("Japanese Yen (¥)").tag("JPY")
+                        Text("Swiss Franc (CHF)").tag("CHF")
+                    }
+                    .pickerStyle(.menu)
+                }
+                .padding(16)
+                .background(.background)
             }
             .navigationSplitViewColumnWidth(min: 300, ideal: 350, max: 450)
             .navigationTitle("Accounts")
