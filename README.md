@@ -1,6 +1,6 @@
 # Oracle Bill
 
-Oracle Bill is a lightweight, premium macOS menu bar application designed to help you track month-to-date Oracle Cloud Infrastructure (OCI) spend in USD across multiple accounts or server groups.
+Oracle Bill is a lightweight, premium macOS menu bar application designed to help you track month-to-date Oracle Cloud Infrastructure (OCI) spend in USD(or Euro) across multiple accounts or server groups.
 
 It surfaces real-time costs directly in your menu bar, alerts you when your configured warning thresholds are breached, and stores all sensitive private keys and API credentials securely in the macOS Keychain.
 
