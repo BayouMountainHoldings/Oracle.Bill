@@ -84,6 +84,7 @@ jobs:
             -sdk macosx \
             -destination "platform=macOS,arch=arm64" \
             -derivedDataPath "$DERIVED_DATA" \
+            MACOSX_DEPLOYMENT_TARGET=13.0 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             build
