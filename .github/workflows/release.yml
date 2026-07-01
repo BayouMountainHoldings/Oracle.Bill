@@ -1,0 +1,186 @@
+name: Signed macOS Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, such as v1.0.1"
+        required: true
+        type: string
+      release_name:
+        description: "Release title"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-sign-notarize:
+    runs-on: macos-14
+
+    env:
+      APP_NAME: Oracle.Bill
+      PROJECT: Oracle.Bill.xcodeproj
+      SCHEME: Oracle.Bill
+      CONFIGURATION: Release
+      TEAM_ID: B6LWQPCDFR
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+      CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Import Developer ID certificate
+        run: |
+          set -euo pipefail
+
+          CERT_PATH="$RUNNER_TEMP/developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+
+          echo -n "$CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          security import "$CERT_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | \
+            sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -n 1)"
+
+          test -n "$IDENTITY"
+          echo "SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Build unsigned app
+        run: |
+          set -euo pipefail
+
+          BUILD_DIR="$RUNNER_TEMP/oracle-bill-build"
+          DERIVED_DATA="$BUILD_DIR/DerivedData"
+
+          rm -rf "$BUILD_DIR"
+          mkdir -p "$BUILD_DIR"
+
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIGURATION" \
+            -sdk macosx \
+            -destination "platform=macOS,arch=arm64" \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+          echo "BUILD_DIR=$BUILD_DIR" >> "$GITHUB_ENV"
+          echo "APP_PATH=$DERIVED_DATA/Build/Products/$CONFIGURATION/$APP_NAME.app" >> "$GITHUB_ENV"
+
+      - name: Sign app
+        run: |
+          set -euo pipefail
+
+          test -d "$APP_PATH"
+
+          find "$APP_PATH" -print0 | while IFS= read -r -d '' item; do
+            xattr -c "$item" 2>/dev/null || true
+          done
+
+          codesign --force --deep \
+            --sign "$SIGNING_IDENTITY" \
+            --options runtime \
+            --timestamp \
+            --entitlements "Oracle.Bill/Oracle_Bill.entitlements" \
+            "$APP_PATH"
+
+          codesign --verify --deep --strict --verbose=4 "$APP_PATH"
+
+      - name: Create and sign DMG
+        run: |
+          set -euo pipefail
+
+          ARTIFACT_DIR="$RUNNER_TEMP/artifacts"
+          STAGE_DIR="$RUNNER_TEMP/dmg-stage"
+          DMG_PATH="$ARTIFACT_DIR/$APP_NAME-${{ inputs.tag }}.dmg"
+          ZIP_PATH="$ARTIFACT_DIR/$APP_NAME-${{ inputs.tag }}.zip"
+
+          rm -rf "$ARTIFACT_DIR" "$STAGE_DIR"
+          mkdir -p "$ARTIFACT_DIR" "$STAGE_DIR"
+
+          ditto "$APP_PATH" "$STAGE_DIR/$APP_NAME.app"
+          ln -s /Applications "$STAGE_DIR/Applications"
+
+          ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
+
+          hdiutil create \
+            -volname "$APP_NAME" \
+            -srcfolder "$STAGE_DIR" \
+            -ov \
+            -format UDZO \
+            "$DMG_PATH"
+
+          codesign --force \
+            --sign "$SIGNING_IDENTITY" \
+            --timestamp \
+            "$DMG_PATH"
+
+          codesign --verify --verbose=4 "$DMG_PATH"
+
+          echo "ARTIFACT_DIR=$ARTIFACT_DIR" >> "$GITHUB_ENV"
+          echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
+
+      - name: Notarize and staple DMG
+        run: |
+          set -euo pipefail
+
+          xcrun notarytool submit "$DMG_PATH" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --wait
+
+          xcrun stapler staple -v "$DMG_PATH"
+          xcrun stapler validate -v "$DMG_PATH"
+
+      - name: Verify final artifacts
+        run: |
+          set -euo pipefail
+
+          spctl --assess --type execute --verbose=4 "$APP_PATH"
+          spctl --assess --type open \
+            --context context:primary-signature \
+            --verbose=4 "$DMG_PATH"
+
+          ditto "$APP_PATH" "$ARTIFACT_DIR/$APP_NAME.app"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-${{ inputs.tag }}
+          path: ${{ env.ARTIFACT_DIR }}/*
+          if-no-files-found: error
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: ${{ inputs.release_name || inputs.tag }}
+          generate_release_notes: true
+          files: |
+            ${{ env.ARTIFACT_DIR }}/*.dmg
+            ${{ env.ARTIFACT_DIR }}/*.zip
