@@ -1,0 +1,70 @@
+name: Sync upstream and sign release
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: sync-upstream-and-release
+  cancel-in-progress: false
+
+jobs:
+  sync-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/Ferohers/Oracle.Bill.git 2>/dev/null || true
+          git fetch upstream main
+
+      - name: Merge new upstream changes into this fork
+        id: sync
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          UPSTREAM_SHA="$(git rev-parse upstream/main)"
+          CURRENT_SHA="$(git rev-parse HEAD)"
+
+          if git merge-base --is-ancestor "$UPSTREAM_SHA" "$CURRENT_SHA"; then
+            echo "updated=false" >> "$GITHUB_OUTPUT"
+            echo "Fork already contains upstream commit $UPSTREAM_SHA"
+            exit 0
+          fi
+
+          git merge --no-edit upstream/main
+          git push origin HEAD:main
+
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          RELEASE_TAG="upstream-$(date -u '+%Y.%m.%d-%H%M')-${SHORT_SHA}"
+
+          echo "updated=true" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "release_name=Oracle Bill ${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Start signed release workflow
+        if: steps.sync.outputs.updated == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run release.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f tag="${{ steps.sync.outputs.release_tag }}" \
+            -f release_name="${{ steps.sync.outputs.release_name }}"
